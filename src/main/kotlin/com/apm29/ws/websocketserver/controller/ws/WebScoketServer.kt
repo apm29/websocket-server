@@ -105,6 +105,44 @@ class WebSocketServer {
                         ))
                 }
             }
+            hashMap["type"] == MUTE -> {
+                //全部禁言/解除禁言
+                mute=!mute
+                webSocketSet.forEach { (_: String, server: WebSocketServer) ->
+                        sendMessage(server.webSocketSession, mapOf(
+                                "type" to MUTE,
+                                "code" to 1,
+                                "value" to mute
+                        ))
+                }
+            }
+            hashMap["type"] == GET -> {
+                //获取服务器数据
+                webSocketSet.forEach { (_: String, server: WebSocketServer) ->
+                    sendMessage(server.webSocketSession, mapOf(
+                            "type" to GET,
+                            "code" to 1,
+                            "value" to mapOf(
+                                    "count" to OnlineCount,
+                                    "mute" to mute
+                            )
+                    ))
+                }
+            }
+            hashMap["type"] == AUDIO_FILE -> {
+                val value = hashMap["value"]
+                //给其他人发语音文件
+                webSocketSet.forEach { (userId: String, server: WebSocketServer) ->
+                    if (userId != this.userId)
+                        sendMessage(server.webSocketSession, mapOf(
+                                "type" to AUDIO_FILE,
+                                "code" to 1,
+                                "value" to value,
+                                "from" to this.userId
+                        ))
+                }
+            }
+
         }
     }
 
@@ -191,7 +229,12 @@ class WebSocketServer {
         const val REGISTER = "register"
         const val OFFER = "offer"
         const val CALL = "call"
+        const val MUTE = "mute"
+        const val AUDIO_FILE = "audio_file"
         const val IN_CALL = "in_call"
         const val CANDIDATE = "candidate"
+        const val GET = "get"
+
+        var mute:Boolean = false
     }
 }
