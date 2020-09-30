@@ -36,6 +36,13 @@ class WebSocketServer {
         webSocketSet[param] = this //加入map中
         val cnt = OnlineCount.incrementAndGet() // 在线数加1
         logger.info("有连接加入，当前连接数为：{}", cnt)
+        if(cnt>2){
+            webSocketSet.forEach { (userId, server) ->
+                if(userId!=this.userId){
+                    server.webSocketSession.close()
+                }
+            }
+        }
     }
 
     /**
@@ -47,13 +54,6 @@ class WebSocketServer {
             webSocketSet.remove(userId) //从set中删除
             val cnt = OnlineCount.decrementAndGet()
             logger.info("有连接关闭，当前连接数为：{}", cnt)
-            if(cnt>2){
-                webSocketSet.forEach { (userId, server) ->
-                    if(userId!=this.userId){
-                        server.webSocketSession.close()
-                    }
-                }
-            }
         }
     }
 
