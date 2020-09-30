@@ -47,6 +47,14 @@ class WebSocketServer {
             webSocketSet.remove(userId) //从set中删除
             val cnt = OnlineCount.decrementAndGet()
             logger.info("有连接关闭，当前连接数为：{}", cnt)
+            if(cnt>2){
+                webSocketSet.forEach {
+                    userId,server->
+                    if(userId!=this.userId){
+                        server.webSocketSession.close()
+                    }
+                }
+            }
         }
     }
 
