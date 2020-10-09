@@ -28,7 +28,7 @@ dependencies {
     }
 
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
-    implementation("mysql:mysql-connector-java:6.0.6")
+    implementation("mysql:mysql-connector-java:8.0.11")
     implementation("com.google.code.gson:gson")
 }
 

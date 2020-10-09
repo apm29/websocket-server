@@ -5,6 +5,7 @@ import com.apm29.ws.websocketserver.db.dao.GroupRepository
 import com.apm29.ws.websocketserver.db.dao.GroupUserRepository
 import com.apm29.ws.websocketserver.db.dao.UserRepository
 import com.apm29.ws.websocketserver.db.entity.Group
+import com.apm29.ws.websocketserver.db.entity.GroupUser
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import org.slf4j.Logger
@@ -74,26 +75,83 @@ class WebSocketServerV2 @Autowired constructor(
     fun onMessage(message: String, session: Session?) {
         logger.info("来自客户端的消息：{}", message)
         val signalMessage = try {
-            gson.fromJson<SignalMessage>(message, SignalMessage::class.java)
+            gson.fromJson(message, SignalMessage::class.java)
         } catch (e: Exception) {
             Fail()
         }
-        when (signalMessage.type) {
+        val groupId = signalMessage.groupId
+        val id = signalMessage.id
+        when (val type = signalMessage.type) {
+            //注册到信令服务器
             WebSocketTypes.Register.type -> {
                 //返回im相关信息
-                val groups = groupUserRepository.findAllGroupByUserId(signalMessage.from ?: userId)
-                webSocketSession.basicRemote.sendText(
-                        gson.toJson(SignalMessage(type = WebSocketTypes.Register.type, info = ImPttInfo(
-                                signalMessage.from,
-                                groups
-                        )))
-                )
+                try {
+                    val groups = groupUserRepository.findAllGroupByUserId(signalMessage.from ?: userId)
+                    sendMessage(
+                            SignalMessage(
+                                    id = signalMessage.id,
+                                    type = type,
+                                    info = ImPttInfo(signalMessage.from,groups)
+                            )
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    sendErrorMessage(id,"信令服务器注册失败")
+                }
+            }
+            //加入群组
+            WebSocketTypes.JoinGroup.type -> {
+                if (groupId != null) {
+                    try {
+                        val group = groupRepository.findById(
+                                groupId
+                        )
+                        if(!group.isPresent){
+                            groupRepository.save(Group(groupId))
+                        }
+                        groupUserRepository.save(
+                                GroupUser(
+                                        groupId = groupId,
+                                        userId = userId
+                                )
+                        )
+                        sendMessage(
+                                SignalMessage(
+                                        id = id,
+                                        type = type
+                                )
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        sendErrorMessage(id,"加入群组失败")
+                    }
+                } else {
+                    sendErrorMessage(id,"groupId不能为空")
+                }
             }
             else -> {
 
             }
         }
 
+    }
+
+    private fun sendMessage(message: SignalMessage) {
+        webSocketSession.basicRemote.sendText(
+                gson.toJson(message)
+        )
+    }
+
+    private fun sendErrorMessage(id:String, reason:String){
+        webSocketSession.basicRemote.sendText(
+                gson.toJson(
+                        SignalMessage(
+                                id = id,
+                                type = WebSocketTypes.Fail.type,
+                                error = reason
+                        )
+                )
+        )
     }
 
 
@@ -143,7 +201,8 @@ open class SignalMessage(
         val candidate: IceCandidate? = null,
         val sdp: SessionDescription? = null,
         val info: ImPttInfo? = null,
-        val groupUsers:List<String> = arrayListOf()
+        val groupUsers: List<String> = arrayListOf(),
+        val error:String? = null
 )
 
 data class ImPttInfo(
