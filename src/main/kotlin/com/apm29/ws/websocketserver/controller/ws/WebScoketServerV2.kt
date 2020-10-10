@@ -25,13 +25,9 @@ import javax.websocket.server.ServerEndpoint
  * 注解的值将被用于监听用户连接的终端访问URL地址,客户端可以通过这个URL来连接到WebSocket服务器端
  */
 
-@ServerEndpoint("/websocket/v2/{userId}", configurator = WSEndpointConfig::class)
+@ServerEndpoint("/websocket/v2/{userId}")
 @Component
-class WebSocketServerV2 @Autowired constructor(
-        val userRepository: UserRepository,
-        val groupRepository: GroupRepository,
-        val groupUserRepository: GroupUserRepository
-) {
+class WebSocketServerV2  {
     //与某个客户端的连接会话，需要通过它来给客户端发送数据
     private lateinit var webSocketSession: Session
 
@@ -40,18 +36,22 @@ class WebSocketServerV2 @Autowired constructor(
 
     //gson
     private val gson: Gson = GsonBuilder()
+            .setPrettyPrinting()
             .create()
 
     /**
      * 连接建立成功调用的方法 */
     @OnOpen
-    fun onOpen(@PathParam(value = "userId") param: String, WebSocketsession: Session, config: EndpointConfig?) {
+    fun onOpen(@PathParam(value = "userId") param: String, session: Session, config: EndpointConfig?) {
         this.userId = param
-        //log.info("authKey:{}",authKey);
-        this.webSocketSession = WebSocketsession
+        logger.info("userId:{}",userId);
+        this.webSocketSession = session
         webSocketSet[param] = this //加入map中
+        webSocketSet.forEach{
+            logger.warn("${it.key}:${it.value.userId}:${it.value.webSocketSession}")
+        }
         val cnt = OnlineCount.incrementAndGet() // 在线数加1
-        logger.info("有连接加入，当前连接数为：{}", cnt)
+        logger.info("有连接加入，当前连接数为：{} {}", cnt,webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
     }
 
     /**
@@ -62,7 +62,7 @@ class WebSocketServerV2 @Autowired constructor(
         if (userId != "") {
             webSocketSet.remove(userId) //从set中删除
             val cnt = OnlineCount.decrementAndGet()
-            logger.info("有连接关闭，当前连接数为：{}", cnt)
+            logger.info("有连接关闭，当前连接数为：{} {}", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
         }
     }
 
@@ -73,30 +73,35 @@ class WebSocketServerV2 @Autowired constructor(
      */
     @OnMessage
     fun onMessage(message: String, session: Session?) {
-        logger.info("来自客户端的消息：{}", message)
+
         val signalMessage = try {
             gson.fromJson(message, SignalMessage::class.java)
         } catch (e: Exception) {
             Fail()
         }
+        logger.info("来自客户端的消息：{}", signalMessage)
         val groupId = signalMessage.groupId
         val id = signalMessage.id
+        val from = signalMessage.from
+        val to = signalMessage.to
+        val sdp = signalMessage.sdp
+        val candidate = signalMessage.candidate
         when (val type = signalMessage.type) {
             //注册到信令服务器
             WebSocketTypes.Register.type -> {
                 //返回im相关信息
                 try {
-                    val groups = groupUserRepository.findAllGroupByUserId(signalMessage.from ?: userId)
+                    val groups = groupUserRepository.findAllGroupByUserId(from?:userId)
                     sendMessage(
                             SignalMessage(
                                     id = signalMessage.id,
                                     type = type,
-                                    info = ImPttInfo(signalMessage.from,groups)
+                                    info = ImPttInfo(from, groups)
                             )
                     )
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    sendErrorMessage(id,"信令服务器注册失败")
+                    sendErrorMessage(id, "信令服务器注册失败")
                 }
             }
             //加入群组
@@ -106,13 +111,13 @@ class WebSocketServerV2 @Autowired constructor(
                         val group = groupRepository.findById(
                                 groupId
                         )
-                        if(!group.isPresent){
+                        if (!group.isPresent) {
                             groupRepository.save(Group(groupId))
                         }
                         groupUserRepository.save(
                                 GroupUser(
                                         groupId = groupId,
-                                        userId = userId
+                                        userId = from
                                 )
                         )
                         sendMessage(
@@ -123,11 +128,103 @@ class WebSocketServerV2 @Autowired constructor(
                         )
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        sendErrorMessage(id,"加入群组失败")
+                        sendErrorMessage(id, "加入群组失败")
                     }
                 } else {
-                    sendErrorMessage(id,"groupId不能为空")
+                    sendErrorMessage(id, "groupId不能为空")
                 }
+            }
+            WebSocketTypes.Call.type -> {
+                try {//接到呼叫,返回群组人员列表,给其他人员发送InCall
+                    val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                    val others = groupUsers.filter { it.userId != from }
+                    //回复caller
+                    sendMessage(
+                            SignalMessage(
+                                    id = id,
+                                    type = type,
+                                    groupId = groupId,
+                                    groupUsers = others.map {
+                                        it.userId ?: "UNKNOWN-USER-ID"
+                                    },
+                                    from = from
+                            )
+                    )
+                    //给其他人员发送InCall
+                    others.forEach { user ->
+                        sendMessage(
+                                SignalMessage(
+                                        type = WebSocketTypes.InCall.type,
+                                        from = from,
+                                        groupId = groupId,
+                                        to = user.userId
+                                ),
+                                webSocketSet[user.userId]?.webSocketSession
+                        )
+                    }
+                } catch (e: Exception) {
+                    sendErrorMessage(id, "呼叫失败:请联系管理员")
+                    e.printStackTrace()
+                }
+            }
+            WebSocketTypes.Offer.type ->{
+                //将Offer转发给其他Callee
+                val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                val others =  groupUsers.filter { it.userId != from }
+
+                others.forEach { user ->
+                    val serverV2 = webSocketSet[user.userId]
+                    sendMessage(
+                            SignalMessage(
+                                    type = WebSocketTypes.Offer.type,
+                                    from = from,
+                                    groupId = groupId,
+                                    to = user.userId,
+                                    sdp = sdp
+                            ),
+                            serverV2?.webSocketSession
+                    )
+                }
+                sendSuccessMessage(id)
+            }
+            WebSocketTypes.Answer.type ->{
+                //转发消息给其他Callee
+                val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                val others =  groupUsers.filter { it.userId != from }
+                others.forEach { user ->
+                    sendMessage(
+                            SignalMessage(
+                                    type = WebSocketTypes.Answer.type,
+                                    from = from,
+                                    groupId = groupId,
+                                    to = user.userId,
+                                    sdp = sdp
+                            ),
+                            webSocketSet[user.userId]?.webSocketSession
+                    )
+                }
+                sendSuccessMessage(id)
+            }
+            WebSocketTypes.Candidate.type ->{
+                //转发candidate给callee
+                val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                val others =  groupUsers.filter { it.userId != from }
+                println(others)
+                println(webSocketSet.size)
+                others.forEach { user ->
+                    sendMessage(
+                            SignalMessage(
+                                    type = WebSocketTypes.Candidate.type,
+                                    from = from,
+                                    groupId = groupId,
+                                    to = user.userId,
+                                    candidate = candidate,
+                                    sdp = sdp
+                            ),
+                            webSocketSet[user.userId]?.webSocketSession
+                    )
+                }
+                sendSuccessMessage(id)
             }
             else -> {
 
@@ -136,19 +233,37 @@ class WebSocketServerV2 @Autowired constructor(
 
     }
 
-    private fun sendMessage(message: SignalMessage) {
-        webSocketSession.basicRemote.sendText(
-                gson.toJson(message)
-        )
+    private fun sendMessage(message: SignalMessage, target: Session? = webSocketSession) {
+        logger.info("服务端发送:{}",message)
+        if(target!=null){
+            target.basicRemote?.sendText(
+                    gson.toJson(message)
+            )
+        }else{
+            WebSocketServer.logger.info("无效的WS链接--->$target")
+            WebSocketServer.logger.info("${message.from}--->${webSocketSet[message.from]}")
+            WebSocketServer.logger.info("${message.to}--->${webSocketSet[message.to]}")
+        }
     }
 
-    private fun sendErrorMessage(id:String, reason:String){
+    private fun sendErrorMessage(id: String, reason: String) {
         webSocketSession.basicRemote.sendText(
                 gson.toJson(
                         SignalMessage(
                                 id = id,
                                 type = WebSocketTypes.Fail.type,
                                 error = reason
+                        )
+                )
+        )
+    }
+
+    private fun sendSuccessMessage(id: String) {
+        webSocketSession.basicRemote.sendText(
+                gson.toJson(
+                        SignalMessage(
+                                id = id,
+                                type = WebSocketTypes.Success.type
                         )
                 )
         )
@@ -166,14 +281,30 @@ class WebSocketServerV2 @Autowired constructor(
         error.printStackTrace()
     }
 
+    @Autowired
+    fun setRepos(
+            userRepository: UserRepository,
+            groupRepository: GroupRepository,
+            groupUserRepository: GroupUserRepository
+    ){
+        WebSocketServerV2.userRepository = userRepository
+        WebSocketServerV2.groupRepository = groupRepository
+        WebSocketServerV2.groupUserRepository = groupUserRepository
+    }
 
     companion object {
+
+        @JvmStatic lateinit var userRepository: UserRepository
+        @JvmStatic lateinit var groupRepository: GroupRepository
+        @JvmStatic lateinit var groupUserRepository: GroupUserRepository
+
         var logger: Logger = LoggerFactory.getLogger(WebSocketServerV2::class.java)
 
         //静态变量，用来记录当前在线连接数。应该把它设计成线程安全的。
         private val OnlineCount = AtomicInteger(0)
 
-        //concurrent包的线程安全Set，用来存放每个客户端对应的MyWebSocket对象。若要实现服务端与单一客户端通信的话，可以使用Map来存放，其中Key可以为用户标识
+        // concurrent包的线程安全Set，用来存放每个客户端对应的MyWebSocket对象。
+        // 若要实现服务端与单一客户端通信的话，可以使用Map来存放，其中Key可以为用户标识
         private val webSocketSet = ConcurrentHashMap<String, WebSocketServerV2>()
 
     }
@@ -182,6 +313,7 @@ class WebSocketServerV2 @Autowired constructor(
 //WebSocket 消息类型
 sealed class WebSocketTypes(val type: String) {
     object Fail : WebSocketTypes("fail")
+    object Success : WebSocketTypes("success")
     object Register : WebSocketTypes("register")
     object JoinGroup : WebSocketTypes("create_join_group")
     object Offer : WebSocketTypes("offer")
@@ -202,8 +334,12 @@ open class SignalMessage(
         val sdp: SessionDescription? = null,
         val info: ImPttInfo? = null,
         val groupUsers: List<String> = arrayListOf(),
-        val error:String? = null
-)
+        val error: String? = null
+){
+    override fun toString(): String {
+        return "SignalMessage(id='$id', type='$type', from=$from, to=$to, groupId=$groupId,  info=$info, groupUsers=$groupUsers, error=$error)"
+    }
+}
 
 data class ImPttInfo(
         //用户id
