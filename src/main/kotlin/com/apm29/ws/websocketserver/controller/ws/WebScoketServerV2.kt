@@ -153,6 +153,10 @@ class WebSocketServerV2 {
                 try {//接到呼叫,返回群组人员列表,给其他人员发送InCall
                     val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
                     val others = groupUsers.filter { it.userId != from }
+                    if(others.isEmpty()){
+                        sendErrorMessage(id, "呼叫失败:群组中无人接听")
+                        return
+                    }
                     //回复caller
                     sendMessage(
                             SignalMessage(
@@ -268,7 +272,7 @@ class WebSocketServerV2 {
                     gson.toJson(message)
             )
         } else {
-            WebSocketServer.logger.info("无效的WS链接--->$target")
+            WebSocketServer.logger.info("用户未连接:${message.to}--->$target")
             WebSocketServer.logger.info("${message.from}--->${webSocketSet[message.from]}")
             WebSocketServer.logger.info("${message.to}--->${webSocketSet[message.to]}")
         }
