@@ -274,6 +274,7 @@ class WebSocketServerV2 {
         } else {
             WebSocketServer.logger.info("用户未连接:${message.to}--->$target")
             WebSocketServer.logger.info("${message.from}--->${webSocketSet[message.from]}")
+            webSocketSet.remove(message.to)
             WebSocketServer.logger.info("${message.to}--->${webSocketSet[message.to]}")
         }
     }
