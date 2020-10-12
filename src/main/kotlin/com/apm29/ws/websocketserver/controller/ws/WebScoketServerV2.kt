@@ -23,11 +23,13 @@ import javax.websocket.server.ServerEndpoint
 /**
  * @ServerEndpoint 注解是一个类层次的注解，它的功能主要是将目前的类定义成一个websocket服务器端,
  * 注解的值将被用于监听用户连接的终端访问URL地址,客户端可以通过这个URL来连接到WebSocket服务器端
+ *
+ * N个用户就存在N个EndPoint
  */
 
 @ServerEndpoint("/websocket/v2/{userId}")
 @Component
-class WebSocketServerV2  {
+class WebSocketServerV2 {
     //与某个客户端的连接会话，需要通过它来给客户端发送数据
     private lateinit var webSocketSession: Session
 
@@ -44,14 +46,24 @@ class WebSocketServerV2  {
     @OnOpen
     fun onOpen(@PathParam(value = "userId") param: String, session: Session, config: EndpointConfig?) {
         this.userId = param
-        logger.info("userId:{}",userId);
+        logger.info("userId:{}", userId);
         this.webSocketSession = session
+
+        //踢出旧WebSocket连接
+        val oldServer = WebSocketServerV2.webSocketSet[param]
+        if (oldServer != null) {
+            oldServer.webSocketSession.close(CloseReason({ 203 }, "踢出旧连接"))
+            logger.info("关闭旧连接:{}", userId)
+        } else {
+            logger.info("新建连接:{}", userId)
+        }
+
         webSocketSet[param] = this //加入map中
-        webSocketSet.forEach{
+        webSocketSet.forEach {
             logger.warn("${it.key}:${it.value.userId}:${it.value.webSocketSession}")
         }
         val cnt = OnlineCount.incrementAndGet() // 在线数加1
-        logger.info("有连接加入，当前连接数为：{} {}", cnt,webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
+        logger.info("有连接加入，当前连接数为：{} {}", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
     }
 
     /**
@@ -87,11 +99,12 @@ class WebSocketServerV2  {
         val sdp = signalMessage.sdp
         val candidate = signalMessage.candidate
         when (val type = signalMessage.type) {
+            /**********************收到注册请求***********************/
             //注册到信令服务器
             WebSocketTypes.Register.type -> {
                 //返回im相关信息
                 try {
-                    val groups = groupUserRepository.findAllGroupByUserId(from?:userId)
+                    val groups = groupUserRepository.findAllGroupByUserId(from ?: userId)
                     sendMessage(
                             SignalMessage(
                                     id = signalMessage.id,
@@ -104,6 +117,7 @@ class WebSocketServerV2  {
                     sendErrorMessage(id, "信令服务器注册失败")
                 }
             }
+            /**********************收到加入请求***********************/
             //加入群组
             WebSocketTypes.JoinGroup.type -> {
                 if (groupId != null) {
@@ -134,6 +148,7 @@ class WebSocketServerV2  {
                     sendErrorMessage(id, "groupId不能为空")
                 }
             }
+            /**********************收到呼叫***********************/
             WebSocketTypes.Call.type -> {
                 try {//接到呼叫,返回群组人员列表,给其他人员发送InCall
                     val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
@@ -167,79 +182,92 @@ class WebSocketServerV2  {
                     e.printStackTrace()
                 }
             }
-            WebSocketTypes.Offer.type ->{
-                //将Offer转发给其他Callee
-                val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
-                val others =  groupUsers.filter { it.userId != from }
+            /**********************收到Offer转发请求***********************/
+            WebSocketTypes.Offer.type -> {
+                try {//将Offer转发给其他Callee
+                    val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                    val others = groupUsers.filter { it.userId != from }
 
-                others.forEach { user ->
-                    val serverV2 = webSocketSet[user.userId]
-                    sendMessage(
-                            SignalMessage(
-                                    type = WebSocketTypes.Offer.type,
-                                    from = from,
-                                    groupId = groupId,
-                                    to = user.userId,
-                                    sdp = sdp
-                            ),
-                            serverV2?.webSocketSession
-                    )
+                    others.forEach { user ->
+                        val serverV2 = webSocketSet[user.userId]
+                        sendMessage(
+                                SignalMessage(
+                                        type = WebSocketTypes.Offer.type,
+                                        from = from,
+                                        groupId = groupId,
+                                        to = user.userId,
+                                        sdp = sdp
+                                ),
+                                serverV2?.webSocketSession
+                        )
+                    }
+                    sendSuccessMessage(id)
+                } catch (e: Exception) {
+                    sendErrorMessage(id, "发送Offer失败")
                 }
-                sendSuccessMessage(id)
             }
-            WebSocketTypes.Answer.type ->{
-                //转发消息给其他Callee
-                val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
-                val others =  groupUsers.filter { it.userId != from }
-                others.forEach { user ->
-                    sendMessage(
-                            SignalMessage(
-                                    type = WebSocketTypes.Answer.type,
-                                    from = from,
-                                    groupId = groupId,
-                                    to = user.userId,
-                                    sdp = sdp
-                            ),
-                            webSocketSet[user.userId]?.webSocketSession
-                    )
+            /**********************收到Answer转发请求***********************/
+            WebSocketTypes.Answer.type -> {
+                try {//转发消息给其他Callee
+                    val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                    val others = groupUsers.filter { it.userId != from }
+                    others.forEach { user ->
+                        sendMessage(
+                                SignalMessage(
+                                        type = WebSocketTypes.Answer.type,
+                                        from = from,
+                                        groupId = groupId,
+                                        to = user.userId,
+                                        sdp = sdp
+                                ),
+                                webSocketSet[user.userId]?.webSocketSession
+                        )
+                    }
+                    sendSuccessMessage(id)
+                } catch (e: Exception) {
+                    sendErrorMessage(id, "发送Answer失败")
                 }
-                sendSuccessMessage(id)
             }
-            WebSocketTypes.Candidate.type ->{
-                //转发candidate给callee
-                val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
-                val others =  groupUsers.filter { it.userId != from }
-                println(others)
-                println(webSocketSet.size)
-                others.forEach { user ->
-                    sendMessage(
-                            SignalMessage(
-                                    type = WebSocketTypes.Candidate.type,
-                                    from = from,
-                                    groupId = groupId,
-                                    to = user.userId,
-                                    candidate = candidate,
-                                    sdp = sdp
-                            ),
-                            webSocketSet[user.userId]?.webSocketSession
-                    )
+            /**********************收到Candidate转发请求***********************/
+            WebSocketTypes.Candidate.type -> {
+                try {//转发candidate给callee
+                    val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
+                    val others = groupUsers.filter { it.userId != from }
+                    println(others)
+                    println(webSocketSet.size)
+                    others.forEach { user ->
+                        sendMessage(
+                                SignalMessage(
+                                        type = WebSocketTypes.Candidate.type,
+                                        from = from,
+                                        groupId = groupId,
+                                        to = user.userId,
+                                        candidate = candidate,
+                                        sdp = sdp
+                                ),
+                                webSocketSet[user.userId]?.webSocketSession
+                        )
+                    }
+                    sendSuccessMessage(id)
+                } catch (e: Exception) {
+                    sendErrorMessage(id, "转发Candidate失败")
                 }
-                sendSuccessMessage(id)
             }
+            /**********************收到其他请求***********************/
             else -> {
-
+                logger.info("收到未知请求:{}",message)
             }
         }
 
     }
 
     private fun sendMessage(message: SignalMessage, target: Session? = webSocketSession) {
-        logger.info("服务端发送:{}",message)
-        if(target!=null){
+        logger.info("服务端发送:{}", message)
+        if (target != null) {
             target.basicRemote?.sendText(
                     gson.toJson(message)
             )
-        }else{
+        } else {
             WebSocketServer.logger.info("无效的WS链接--->$target")
             WebSocketServer.logger.info("${message.from}--->${webSocketSet[message.from]}")
             WebSocketServer.logger.info("${message.to}--->${webSocketSet[message.to]}")
@@ -286,7 +314,7 @@ class WebSocketServerV2  {
             userRepository: UserRepository,
             groupRepository: GroupRepository,
             groupUserRepository: GroupUserRepository
-    ){
+    ) {
         WebSocketServerV2.userRepository = userRepository
         WebSocketServerV2.groupRepository = groupRepository
         WebSocketServerV2.groupUserRepository = groupUserRepository
@@ -294,9 +322,14 @@ class WebSocketServerV2  {
 
     companion object {
 
-        @JvmStatic lateinit var userRepository: UserRepository
-        @JvmStatic lateinit var groupRepository: GroupRepository
-        @JvmStatic lateinit var groupUserRepository: GroupUserRepository
+        @JvmStatic
+        lateinit var userRepository: UserRepository
+
+        @JvmStatic
+        lateinit var groupRepository: GroupRepository
+
+        @JvmStatic
+        lateinit var groupUserRepository: GroupUserRepository
 
         var logger: Logger = LoggerFactory.getLogger(WebSocketServerV2::class.java)
 
@@ -335,7 +368,7 @@ open class SignalMessage(
         val info: ImPttInfo? = null,
         val groupUsers: List<String> = arrayListOf(),
         val error: String? = null
-){
+) {
     override fun toString(): String {
         return "SignalMessage(id='$id', type='$type', from=$from, to=$to, groupId=$groupId,  info=$info, groupUsers=$groupUsers, error=$error)"
     }
