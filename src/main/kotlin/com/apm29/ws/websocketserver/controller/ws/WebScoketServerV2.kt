@@ -1,6 +1,5 @@
 package com.apm29.ws.websocketserver.controller.ws
 
-import com.apm29.ws.websocketserver.config.WSEndpointConfig
 import com.apm29.ws.websocketserver.db.dao.GroupRepository
 import com.apm29.ws.websocketserver.db.dao.GroupUserRepository
 import com.apm29.ws.websocketserver.db.dao.UserRepository
@@ -63,7 +62,7 @@ class WebSocketServerV2 {
             logger.warn("${it.key}:${it.value.userId}:${it.value.webSocketSession}")
         }
         val cnt = OnlineCount.incrementAndGet() // 在线数加1
-        logger.info("有连接加入，当前连接数为：{} {}", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
+        logger.info("有连接加入，当前连接数为：{} [{}]", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
     }
 
     /**
@@ -74,7 +73,7 @@ class WebSocketServerV2 {
         if (userId != "") {
             webSocketSet.remove(userId) //从set中删除
             val cnt = OnlineCount.decrementAndGet()
-            logger.info("有连接关闭，当前连接数为：{} {}", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
+            logger.info("有连接关闭，当前连接数为：{} [{}]", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
         }
     }
 
@@ -107,7 +106,7 @@ class WebSocketServerV2 {
                     val groups = groupUserRepository.findAllGroupByUserId(from ?: userId)
                     sendMessage(
                             SignalMessage(
-                                    id = signalMessage.id,
+                                    id = id,
                                     type = type,
                                     info = ImPttInfo(from, groups)
                             )
@@ -159,19 +158,22 @@ class WebSocketServerV2 {
                         return
                     }
                     //回复caller
+                    val onlineUsersInGroup = others.filter {
+                        webSocketSet.keys().toList().contains(it.userId)
+                    }
                     sendMessage(
                             SignalMessage(
                                     id = id,
                                     type = type,
                                     groupId = groupId,
-                                    groupUsers = others.map {
+                                    groupUsers = onlineUsersInGroup.map {
                                         it.userId ?: "UNKNOWN-USER-ID"
                                     },
                                     from = from
                             )
                     )
                     //给其他人员发送InCall
-                    others.forEach { user ->
+                    onlineUsersInGroup.forEach { user ->
                         sendMessage(
                                 SignalMessage(
                                         type = WebSocketTypes.InCall.type,
@@ -192,8 +194,10 @@ class WebSocketServerV2 {
                 try {//将Offer转发给其他Callee
                     val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
                     val others = groupUsers.filter { it.userId != from }
-
-                    others.forEach { user ->
+                    val onlineUsersInGroup = others.filter {
+                        webSocketSet.keys().toList().contains(it.userId)
+                    }
+                    onlineUsersInGroup.forEach { user ->
                         val serverV2 = webSocketSet[user.userId]
                         sendMessage(
                                 SignalMessage(
@@ -216,7 +220,10 @@ class WebSocketServerV2 {
                 try {//转发消息给其他Callee
                     val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
                     val others = groupUsers.filter { it.userId != from }
-                    others.forEach { user ->
+                    val onlineUsersInGroup = others.filter {
+                        webSocketSet.keys().toList().contains(it.userId)
+                    }
+                    onlineUsersInGroup.forEach { user ->
                         sendMessage(
                                 SignalMessage(
                                         type = WebSocketTypes.Answer.type,
@@ -238,9 +245,13 @@ class WebSocketServerV2 {
                 try {//转发candidate给callee
                     val groupUsers = groupUserRepository.findAllUserByGroupId(groupId)
                     val others = groupUsers.filter { it.userId != from }
+
                     println(others)
                     println(webSocketSet.size)
-                    others.forEach { user ->
+                    val onlineUsersInGroup = others.filter {
+                        webSocketSet.keys().toList().contains(it.userId)
+                    }
+                    onlineUsersInGroup.forEach { user ->
                         sendMessage(
                                 SignalMessage(
                                         type = WebSocketTypes.Candidate.type,
@@ -273,9 +284,9 @@ class WebSocketServerV2 {
                     gson.toJson(message)
             )
         } else {
-            WebSocketServer.logger.info("用户未连接:${message.to}--->$target")
-            WebSocketServer.logger.info("${message.from}--->${webSocketSet[message.from]}")
-            WebSocketServer.logger.info("${message.to}--->${webSocketSet[message.to]}")
+            logger.info("用户未连接:${message.to}--->$target")
+            logger.info("${message.from}--->${webSocketSet[message.from]}")
+            logger.info("${message.to}--->${webSocketSet[message.to]}")
         }
     }
 
