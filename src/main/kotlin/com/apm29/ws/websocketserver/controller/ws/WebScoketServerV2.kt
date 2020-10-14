@@ -62,7 +62,7 @@ class WebSocketServerV2 {
             logger.warn("${it.key}:${it.value.userId}:${it.value.webSocketSession}")
         }
         val cnt = OnlineCount.incrementAndGet() // 在线数加1
-        logger.info("有连接加入，当前连接数为：{} [{}]", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
+        logger.info("有连接加入，当前连接数为：{} [{}]", cnt, webSocketSet.keys().toList().reduce { acc, s -> "$acc,$s" })
     }
 
     /**
@@ -73,7 +73,7 @@ class WebSocketServerV2 {
         if (userId != "") {
             webSocketSet.remove(userId) //从set中删除
             val cnt = OnlineCount.decrementAndGet()
-            logger.info("有连接关闭，当前连接数为：{} [{}]", cnt, webSocketSet.keys.reduce { acc, s -> "$acc,$s" })
+            logger.info("有连接关闭，当前连接数为：{} [{}]", cnt, webSocketSet.keys().toList().reduce { acc, s -> "$acc,$s" })
         }
     }
 
